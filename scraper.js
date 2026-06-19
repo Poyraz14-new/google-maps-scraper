@@ -6,7 +6,7 @@ const fs = require('fs');
 
 program
   .requiredOption('-q, --query <query>', 'Search query (e.g. "dentist")')
-  .option('-o, --output <file>', 'Output file', 'leads.json')
+  .option('-o, --output <file>', 'Output file basename (extension stripped — writes BOTH .json and .csv)', 'leads')
   .option('-m, --max <number>', 'Max results to scrape', '20')
   .option('-r, --reagion <location>', 'Reagion to scrape', 'İstanbul')
   .parse();
@@ -23,7 +23,7 @@ let rawCount = 0; // total rows scraped across all cells, before dedup — for v
 const leadKey = (lead) => `${lead.Title}|${lead.Address}`;
 
 
-async function safeAttr(locator, attr) { // getAtribut() in a safe environment 
+async function safeAttr(locator, attr) { // getAtribut() in a safe environment
   try { return (await locator.count()) ? await locator.first().getAttribute(attr, { timeout: 3000 }) : null; }
   catch { return null; }
 }
@@ -87,7 +87,7 @@ async function scrollToEnd(page) {
   const feed = page.locator('div[role="feed"]');
   let prev = 0;
   let stagnant = 0;
-  while (stagnant < 3) {              // 3 quiet rounds = list really exhausted
+  while (stagnant < 3) {
     const count = await page.locator('.Nv2PK').count();
     if (count > prev) {
       prev = count;
@@ -129,11 +129,27 @@ async function reagionToBox(place) {
   }
 }
 
+function toCsv(rows, headers = ['Title', 'Rating', 'Category', 'Address', 'Phone']) {
+  const escape = (v) => {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers.join(',')];
+  for (const row of rows) lines.push(headers.map(h => escape(row[h])).join(','));
+  return lines.join('\n');
+}
+
 reagionToBox(opts.reagion).then(async (result) => {
   const boundingbox = result[0].boundingbox;
   const zoom = inverseSpan(boundingbox[0], boundingbox[1], boundingbox[2], boundingbox[3]);
   await scrape(new Cell({ lat: parseFloat(result[0].lat), lng: parseFloat(result[0].lon), zoom }));
   const leads = [...allLeads.values()];
-  fs.writeFileSync(opts.output, JSON.stringify(leads, null, 2));
-  console.log(`[done] ${leads.length} unique leads (${rawCount} scraped, ${rawCount - leads.length} duplicates removed) -> ${opts.output}`);
+
+  // Strip any extension the user passed so `-o leads.json` and `-o leads.csv` both work.
+  // Always write BOTH formats — customer picks what they want, you only run the scrape once.
+  const base = opts.output.replace(/\.(json|csv)$/i, '');
+  fs.writeFileSync(`${base}.json`, JSON.stringify(leads, null, 2));
+  fs.writeFileSync(`${base}.csv`, toCsv(leads));
+  console.log(`[done] ${leads.length} unique leads (${rawCount} scraped, ${rawCount - leads.length} duplicates removed) -> ${base}.{json,csv}`);
 });
